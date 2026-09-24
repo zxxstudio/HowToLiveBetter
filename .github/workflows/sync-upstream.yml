@@ -1,0 +1,59 @@
+name: 同步上游 HowToLiveBetter
+
+on:
+  schedule:
+    # 每 6 小时检查一次（UTC 时间）；改这里可调频率
+    - cron: "23 */6 * * *"
+  # 也支持在 Actions 页面手动点一下立即同步
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 拉取上游并合并
+        id: sync
+        run: |
+          set -eo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git remote add upstream https://github.com/eternity4719/HowToLiveBetter.git 2>/dev/null \
+            || git remote set-url upstream https://github.com/eternity4719/HowToLiveBetter.git
+          git fetch upstream main --tags --force --prune
+
+          BEFORE=$(git rev-parse HEAD)
+          if ! git merge --no-edit -m "chore: 同步上游更新" upstream/main; then
+            git merge --abort || true
+            echo "::error::与上游产生冲突，已回滚到同步前的状态，请手动处理"
+            exit 1
+          fi
+          AFTER=$(git rev-parse HEAD)
+
+          if [ "$BEFORE" = "$AFTER" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "上游暂无新提交"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "合并了 $(git rev-list --count "$BEFORE".."$AFTER") 个新提交："
+            git log --oneline "$BEFORE".."$AFTER" | head -30
+          fi
+
+      - name: 推送回本仓库
+        if: steps.sync.outputs.changed == 'true'
+        run: |
+          git push origin "HEAD:refs/heads/${GITHUB_REF_NAME}"
+          git push origin --tags --force
